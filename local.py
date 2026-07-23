@@ -1,7 +1,18 @@
 import streamlit as st
 import pypdf
 from google import genai
+from st_paywall import add_auth
 
+st.set_page_config(page_title="Legal AI - Contract Analyzer", page_icon="📜", layout="wide")
+
+st.title("📜 AI Contract & Legal Document Analyzer")
+
+# --- 💳 Payment Check Integration ---
+# ইউজার পেমেন্ট না করলে নিচের অংশগুলো লক থাকবে
+require_auth = add_auth()
+
+if require_auth:
+    st.success("🎉 আপনি প্রিমিয়াম ইউজার হিসেবে অ্যাক্সেস পেয়েছেন!")
 # --- ১. পেজ কনফিগারেশন ---
 st.set_page_config(page_title="Legal AI - Contract Analyzer", page_icon="📜", layout="wide")
 
