@@ -38,14 +38,24 @@ Provide:
 Contract Text:
 {contract_text}"""
 
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(e)}"
+       # ট্রাই করার জন্য প্রাইমারি ও ব্যাকআপ মডেলগুলোর তালিকা
+    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            return response.text  # সফল হলে রেজাল্ট রিটার্ন করবে
+        except Exception as e:
+            # যদি ৫০৩ বা হাই ডিমান্ড এরর দেয়, তবে পরের মডেলে সুইচ করবে
+            if "503" in str(e) or "high demand" in str(e).lower():
+                continue 
+            else:
+                return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(e)}"
+                
+    return "⚠️ গুগলের AI সার্ভার বর্তমানে অত্যন্ত ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।"
 # --- ৪. মূল অ্যাপ UI ---
 if not GEMINI_KEY:
     st.warning("⚠️ Streamlit Cloud Secrets-এ `GEMINI_API_KEY` সেট করা নেই।")
