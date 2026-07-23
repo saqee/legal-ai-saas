@@ -26,9 +26,11 @@ def extract_text_from_pdf(pdf_file):
     return text
 
 # --- ৩. Gemini AI দিয়ে বিশ্লেষণ ---
+# --- ৩. Gemini AI দিয়ে বিশ্লেষণ (With Auto-Fallback & Correct Syntax) ---
 def analyze_contract_with_gemini(contract_text, api_key):
     try:
         client = genai.Client(api_key=api_key)
+        
         prompt = f"""You are an expert legal advisor. Analyze the following contract document carefully.
 Provide:
 1. Executive Summary (3 bullet points).
@@ -38,24 +40,27 @@ Provide:
 Contract Text:
 {contract_text}"""
 
-       # ট্রাই করার জন্য প্রাইমারি ও ব্যাকআপ মডেলগুলোর তালিকা
-    models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+        # ট্রাই করার জন্য প্রাইমারি ও ব্যাকআপ মডেলগুলোর তালিকা
+        models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
-    for model_name in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            return response.text  # সফল হলে রেজাল্ট রিটার্ন করবে
-        except Exception as e:
-            # যদি ৫০৩ বা হাই ডিমান্ড এরর দেয়, তবে পরের মডেলে সুইচ করবে
-            if "503" in str(e) or "high demand" in str(e).lower():
-                continue 
-            else:
-                return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(e)}"
-                
-    return "⚠️ গুগলের AI সার্ভার বর্তমানে অত্যন্ত ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।"
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                return response.text  # সফল হলে রেজাল্ট রিটার্ন করবে
+            except Exception as model_err:
+                # ৫০৩ এরর হলে পরবর্তী ব্যাকআপ মডেলে ট্রাই করবে
+                if "503" in str(model_err) or "high demand" in str(model_err).lower():
+                    continue
+                else:
+                    return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(model_err)}"
+
+        return "⚠️ গুগলের AI সার্ভার বর্তমানে অত্যন্ত ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।"
+
+    except Exception as e:
+        return f"এপিআই ক্লায়েন্ট তৈরিতে সমস্যা হয়েছে: {str(e)}"
 # --- ৪. মূল অ্যাপ UI ---
 if not GEMINI_KEY:
     st.warning("⚠️ Streamlit Cloud Secrets-এ `GEMINI_API_KEY` সেট করা নেই।")
