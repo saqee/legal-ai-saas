@@ -1,7 +1,6 @@
 import streamlit as st
-import requests
 import pypdf
-from st_paywall import add_auth
+from google import genai
 
 # --- ১. পেজ কনফিগারেশন ---
 st.set_page_config(page_title="Legal AI - Contract Analyzer", page_icon="📜", layout="wide")
@@ -9,50 +8,48 @@ st.set_page_config(page_title="Legal AI - Contract Analyzer", page_icon="📜", 
 st.title("📜 AI Contract & Legal Document Analyzer")
 st.write("আপনার যেকোনো চুক্তিপত্র বা ডকুমেন্ট আপলোড করুন এবং AI থেকে তাৎক্ষণিক মূল সারসংক্ষেপ ও ঝুঁকিপূর্ণ শর্তগুলো জেনে নিন।")
 
-# --- ২. সাবস্ক্রিপশন ও লগইন চেক (Paywall) ---
-# st-paywall অটোমেটিক Google Login এবং Stripe Payment চেক পরিচালনা করবে
-# --- ২. সাবস্ক্রিপশন ও লগইন চেক (Paywall) ---
-# st-paywall অটোমেটিক Google/Email Login এবং Stripe Payment চেক পরিচালনা করবে
-require_auth = add_auth()
+# Secrets থেকে তথ্য লোড
+GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
+STRIPE_LINK = st.secrets.get("stripe_link", "#")
 
-# ইউজার পেমেন্ট সম্পন্ন করলে নিচের কোডগুলো এক্সিকিউট হবে
-if require_auth:
-    st.success("স্বাগতম! আপনি প্রিমিয়াম ইউজার হিসেবে লগইন আছেন।")
+# --- সাইডবারে প্রিমিয়াম সাবস্ক্রিপশন ব্যানার ---
+st.sidebar.title("⭐ Upgrade to Pro")
+st.sidebar.write("মাসে আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে সাবস্ক্রাইব করুন।")
+st.sidebar.link_button("💳 Subscribe Now ($9/month)", STRIPE_LINK)
 
-    # --- ৩. PDF ফাইল থেকে টেক্সট এক্সট্রাক্ট করার ফাংশন ---
-    def extract_text_from_pdf(pdf_file):
-        reader = pypdf.PdfReader(pdf_file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
+# --- ২. PDF ফাইল থেকে টেক্সট এক্সট্রাক্ট ---
+def extract_text_from_pdf(pdf_file):
+    reader = pypdf.PdfReader(pdf_file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    return text
 
-    # --- ৪. Hugging Face AI API কল করা ---
-    def analyze_contract_with_ai(contract_text):
-        API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-        headers = {"Authorization": f"Bearer {st.secrets['HF_API_TOKEN']}"}
-        
-        # প্রম্পট ইঞ্জিনিয়ারিং
-        prompt = f"""<s>[INST] You are an expert legal advisor. Analyze the following contract document carefully.
+# --- ৩. Gemini AI দিয়ে বিশ্লেষণ ---
+def analyze_contract_with_gemini(contract_text, api_key):
+    try:
+        client = genai.Client(api_key=api_key)
+        prompt = f"""You are an expert legal advisor. Analyze the following contract document carefully.
 Provide:
 1. Executive Summary (3 bullet points).
-2. Key Risks, Hidden Penalties, or Unfair Clauses (Highlight them clearly with warning flags).
+2. Key Legal Risks, Hidden Penalties, or Unfair Clauses (Highlight them clearly with warning flags ⚠️).
 3. Important Dates & Financial Commitments.
 
 Contract Text:
-{contract_text[:3000]} [/INST]"""  # টোকেন লিমিটের জন্য প্রথম ৩০০০ ক্যারেক্টার পাঠানো হচ্ছে
+{contract_text}"""
 
-        response = requests.post(API_URL, headers=headers, json={"inputs": prompt, "parameters": {"max_new_tokens": 500}})
-        
-        if response.status_code == 200:
-            result = response.json()
-            # মডেলের আউটপুট ফিল্টার করা
-            raw_text = result[0]['generated_text']
-            return raw_text.split("[/INST]")[-1]
-        else:
-            return "AI প্রসেসিংয়ে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(e)}"
 
-    # --- ৫. ফাইল আপলোড UI ---
+# --- ৪. মূল অ্যাপ UI ---
+if not GEMINI_KEY:
+    st.warning("⚠️ Streamlit Cloud Secrets-এ `GEMINI_API_KEY` সেট করা নেই।")
+else:
     uploaded_file = st.file_uploader("আপনার চুক্তিপত্রের PDF ফাইল আপলোড করুন", type=["pdf"])
 
     if uploaded_file is not None:
@@ -61,16 +58,15 @@ Contract Text:
             st.info(f"ফাইল সফলভাবে পড়া হয়েছে ({len(contract_text)} ক্যারেক্টার)")
 
         if st.button("AI দিয়ে বিশ্লেষণ করুন 🚀"):
-            with st.spinner("AI চুক্তিপত্রটি বিশ্লেষণ করছে, কিছু সময় অপেক্ষা করুন..."):
-                analysis_result = analyze_contract_with_ai(contract_text)
+            with st.spinner("Gemini AI চুক্তিপত্রটি বিশ্লেষণ করছে, কিছু সময় অপেক্ষা করুন..."):
+                analysis_result = analyze_contract_with_gemini(contract_text, GEMINI_KEY)
                 
                 st.markdown("---")
-                st.subheader("📊 বিশ্লেষণের ফলাফল:")
+                st.subheader("📊 анализа/বিশ্লেষণের ফলাফল:")
                 st.write(analysis_result)
                 
-                # ফলাফল ডাউনলোড বাটন
                 st.download_button(
-                    label="রিপোর্ট ডাউনলোড করুন (Text)",
+                    label="রিপোর্ট ডাউনলোড করুন",
                     data=analysis_result,
                     file_name="Contract_Analysis_Report.txt",
                     mime="text/plain"
