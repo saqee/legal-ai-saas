@@ -21,11 +21,44 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. ইউজার লগইন / রেজিস্ট্রেশন (Sidebar) ---
-st.sidebar.title("👤 User Account")
+# --- ২. পেমেন্ট সাকসেস চেক (Stripe Success URL Param) ---
+query_params = st.query_params
+if query_params.get("payment") == "success" and "user" in query_params:
+    paid_email = query_params["user"].strip().lower()
+    try:
+        # ডাটাবেসে সাবস্ক্রিপশন স্ট্যাটাস True করে দিন
+        supabase.table("user_analyses").insert({"user_email": paid_email, "file_name": "SUBSCRIPTION_PAYMENT", "is_subscribed": True}).execute()
+        st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে! পৃষ্ঠাটি রিফ্রেশ করুন।")
+    except Exception as e:
+        print(f"Payment update error: {e}")
 
+# --- ৩. ইউজার সেশন বজায় রাখা ---
 if "user_email" not in st.session_state:
     st.session_state.user_email = None
+
+# --- ৪. ইউজার তথ্য ও সাবস্ক্রিপশন চেক করার ফাংশন ---
+def check_user_subscription_status(email):
+    try:
+        # চেক করুন ইউজার কি আগে পেমেন্ট করেছে কি না
+        res = supabase.table("user_analyses").select("is_subscribed").eq("user_email", email).eq("is_subscribed", True).execute()
+        if len(res.data) > 0:
+            return True
+        return False
+    except Exception as e:
+        print(f"Sub check error: {e}")
+        return False
+
+def get_user_usage_count(email):
+    try:
+        # সাধারণ ফাইল ইউজেজ কাউন্ট (পেমেন্ট রেকর্ড বাদ দিয়ে)
+        response = supabase.table("user_analyses").select("id", count="exact").eq("user_email", email).neq("file_name", "SUBSCRIPTION_PAYMENT").execute()
+        return response.count
+    except Exception as e:
+        print(f"Usage count error: {e}")
+        return 0
+
+# --- ৫. ইউজার লগইন / রেজিস্ট্রেশন (Sidebar) ---
+st.sidebar.title("👤 User Account")
 
 if not st.session_state.user_email:
     auth_mode = st.sidebar.radio("Choose Action", ["Login", "Sign Up"])
@@ -36,7 +69,9 @@ if not st.session_state.user_email:
         if st.sidebar.button("Create Account"):
             try:
                 res = supabase.auth.sign_up({"email": email, "password": password})
-                st.sidebar.success("অ্যাকাউন্ট তৈরি হয়েছে! এখন Login করুন।")
+                st.session_state.user_email = email.strip().lower()
+                st.sidebar.success("অ্যাকাউন্ট তৈরি হয়েছে!")
+                st.rerun()
             except Exception as e:
                 st.sidebar.error(f"Error: {str(e)}")
 
@@ -50,27 +85,22 @@ if not st.session_state.user_email:
             except Exception as e:
                 st.sidebar.error("ইমেইল বা পাসওয়ার্ড ভুল হয়েছে।")
 else:
-    is_admin = (st.session_state.user_email == ADMIN_EMAIL)
+    current_user = st.session_state.user_email
+    is_admin = (current_user == ADMIN_EMAIL)
+    is_subscribed = check_user_subscription_status(current_user)
     
     if is_admin:
-        st.sidebar.success("👑 Admin Account (Unlimited Access)")
+        st.sidebar.success("👑 Admin Account (Unlimited)")
+    elif is_subscribed:
+        st.sidebar.success("⭐ Pro Subscribed Member")
     else:
-        st.sidebar.write(f"Logged in as: **{st.session_state.user_email}**")
+        st.sidebar.write(f"Logged in as: **{current_user}**")
         
     if st.sidebar.button("Log Out"):
         st.session_state.user_email = None
         st.rerun()
 
-# --- ৩. ইউজার কয়টি ফাইল বিশ্লেষণ করেছে তা পরীক্ষা করার ফাংশন ---
-def get_user_usage_count(email):
-    try:
-        response = supabase.table("user_analyses").select("id", count="exact").eq("user_email", email).execute()
-        return response.count
-    except Exception as e:
-        print(f"Usage count error: {e}")
-        return 0
-
-# --- ৪. কাজের ইতিহাস Supabase-এ সেভ করার ফাংশন ---
+# --- ৬. কাজের ইতিহাস সেভ করার ফাংশন ---
 def log_user_activity(email, file_name):
     try:
         data = {"user_email": email, "file_name": file_name}
@@ -78,7 +108,7 @@ def log_user_activity(email, file_name):
     except Exception as e:
         print(f"Supabase logging failed: {e}")
 
-# --- ৫. PDF Extraction & Gemini Logic (With Multiple Model Fallback) ---
+# --- ৭. PDF & AI Logic (Multiple Model Fallback) ---
 def extract_text_from_pdf(pdf_file):
     reader = pypdf.PdfReader(pdf_file)
     text = ""
@@ -89,60 +119,55 @@ def extract_text_from_pdf(pdf_file):
 def analyze_contract_with_gemini(contract_text, api_key):
     try:
         client = genai.Client(api_key=api_key)
-        
-        prompt = f"""You are an expert legal advisor. Analyze the following contract document carefully:
-1. Executive Summary (3 bullet points).
-2. Key Legal Risks & Hidden Penalties (Highlight with warning flags ⚠️).
-3. Important Dates & Financial Commitments.
+        prompt = f"""You are an expert legal advisor. Analyze the contract:
+1. Executive Summary (3 bullet points)
+2. Key Legal Risks & Hidden Penalties (⚠️)
+3. Important Dates & Financial Commitments
 
-Contract Text:
-{contract_text}"""
+Contract Text: {contract_text}"""
 
-        # ৫০৩ এরর এড়াতে ব্যাকআপ মডেলের তালিকা
         models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
-
         for model_name in models_to_try:
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                return response.text  # সফল হলে আউটপুট রিটার্ন করবে
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                return response.text
             except Exception as model_err:
-                # ৫০৩ বা হাই ডিমান্ড এরর পেলে পরের মডেলে ট্রাই করবে
                 if "503" in str(model_err) or "high demand" in str(model_err).lower():
                     continue
                 else:
-                    return f"AI প্রসেসিংয়ে সমস্যা হয়েছে: {str(model_err)}"
-
-        return "⚠️ গুগলের AI সার্ভার বর্তমানে অত্যন্ত ব্যস্ত আছে। অনুগ্রহ করে কয়েক সেকেন্ড পর আবার চেষ্টা করুন।"
-
+                    return f"AI Error: {str(model_err)}"
+        return "⚠️ গুগলের AI সার্ভার ব্যস্ত, কিছুক্ষণ পর আবার চেষ্টা করুন।"
     except Exception as e:
-        return f"এপিআই ক্লায়েন্ট তৈরিতে সমস্যা হয়েছে: {str(e)}"
+        return f"API Client Error: {str(e)}"
 
-# --- ৬. মূল অ্যাপের লজিক (Limit Check & Subscription) ---
+# --- ৮. মূল অ্যাপের লজিক (Limit & Subscription Verification) ---
 if not st.session_state.user_email:
-    st.info("👈 সার্ভিসটি ব্যবহার করতে দয়া করে সাইডবার থেকে **Login** অথবা **Sign Up** করুন।")
+    st.info("👈 সার্ভিসটি ব্যবহার করতে সাইডবার থেকে **Login** অথবা **Sign Up** করুন।")
 else:
     current_user = st.session_state.user_email
     is_admin = (current_user == ADMIN_EMAIL)
+    is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
-    # ফ্রি লিমিট চেক (সাধারণ ইউজারের জন্য ১টি ফাইল ফ্রি)
-    if not is_admin and usage_count >= 1:
+    # যদি ইউজার Admin না হয় এবং Subscribed না হয় এবং ১টির বেশি ফাইল ব্যবহার করে ফেলে:
+    if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
-        st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে দয়া করে প্রিমিয়াম সাবস্ক্রিপশন কিনুন।")
+        st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন লিঙ্ক থেকে পেমেন্ট সম্পন্ন করুন।")
+        
+        # ডায়নামিক স্ট্রাইপ লিঙ্ক তৈরি (যাতে পেমেন্ট শেষে আপনার সাইটে ব্যাক করতে পারে)
+        redirect_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
         
         st.markdown("---")
         st.subheader("⭐ Upgrade to Pro")
-        st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস এবং প্রফেশনাল সাপোর্ট।")
-        st.link_button("💳 Subscribe Now ($9/month)", STRIPE_LINK, use_container_width=True)
+        st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস।")
+        st.link_button("💳 Subscribe Now ($9/month)", redirect_url, use_container_width=True)
         
     else:
-        # লিমিট থাকলে অথবা Admin হলে এই সেকশন দেখাবে
-        if not is_admin:
-            st.info(f"📊 আপনি এখন পর্যন্ত **{usage_count}/1** টি ফ্রি ফাইল ব্যবহার করেছেন।")
-        
+        if not is_admin and not is_subscribed:
+            st.info(f"📊 আপনি **{usage_count}/1** টি ফ্রি ফাইল ব্যবহার করেছেন।")
+        elif is_subscribed:
+            st.success("🎉 আপনি একজন Pro গ্রাহক (Unlimited Access)!")
+            
         uploaded_file = st.file_uploader("আপনার চুক্তিপত্রের PDF ফাইল আপলোড করুন", type=["pdf"])
 
         if uploaded_file is not None:
@@ -151,10 +176,8 @@ else:
                 st.info(f"ফাইল সফলভাবে পড়া হয়েছে ({len(contract_text)} ক্যারেক্টার)")
 
             if st.button("AI দিয়ে বিশ্লেষণ করুন 🚀"):
-                with st.spinner("Gemini AI চুক্তিপত্রটি বিশ্লেষণ করছে, কিছু সময় অপেক্ষা করুন..."):
+                with st.spinner("Gemini AI বিশ্লেষণ করছে..."):
                     analysis_result = analyze_contract_with_gemini(contract_text, GEMINI_KEY)
-                    
-                    # Supabase-এ ফাইল এনালাইসিসের তথ্য সেভ করা
                     log_user_activity(current_user, uploaded_file.name)
                     
                     st.markdown("---")
