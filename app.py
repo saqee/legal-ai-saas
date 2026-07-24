@@ -21,33 +21,25 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন বজায় রাখা (URL Query Parameter / Session State Sync) ---
+# --- ২. সেশন বজায় রাখা (URL Query Parameter Sync) ---
 query_params = st.query_params
 
-# ব্রাউজার রিফ্রেশ দেওয়ার পর সেশন ধরে রাখার লজিক
 if "user_email" not in st.session_state or not st.session_state.user_email:
     if "session_email" in query_params:
         st.session_state.user_email = query_params["session_email"].strip().lower()
 
-# --- ৩. পেমেন্ট সাকসেস হ্যান্ডলিং (URL Param বা ম্যানুয়াল সিঙ্ক) ---
-if query_params.get("payment") == "success":
-    user_to_activate = query_params.get("user") or st.session_state.get("user_email")
-    if user_to_activate:
-        user_to_activate = user_to_activate.strip().lower()
-        try:
-            # ডাটাবেসে Pro রেকর্ড চেক/যুক্ত করুন
-            res = supabase.table("user_analyses").select("id").eq("user_email", user_to_activate).eq("is_subscribed", True).execute()
-            if len(res.data) == 0:
-                supabase.table("user_analyses").insert({
-                    "user_email": user_to_activate,
-                    "file_name": "SUBSCRIPTION_PAYMENT",
-                    "is_subscribed": True
-                }).execute()
-            st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
-        except Exception as e:
-            print(f"Payment update error: {e}")
+current_user = st.session_state.get("user_email")
 
-# --- ৪. হেল্পার ফাংশন ---
+# --- ৩. পেমেন্ট সাকসেস আপডেট লজিক (UPDATE instead of DOUBLE INSERT) ---
+if query_params.get("payment") == "success" and current_user:
+    try:
+        # ডাটাবেসে নতুন রো না বানিয়ে ওই ইমেইলের রো-তে is_subscribed = True করে দেওয়া
+        supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", current_user).execute()
+        st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
+    except Exception as e:
+        print(f"Subscription Update Error: {e}")
+
+# --- ৪. হেল্পার ফাংশনসমূহ ---
 def check_user_subscription_status(email):
     try:
         res = supabase.table("user_analyses").select("is_subscribed").eq("user_email", email).eq("is_subscribed", True).execute()
@@ -58,7 +50,7 @@ def check_user_subscription_status(email):
 
 def get_user_usage_count(email):
     try:
-        response = supabase.table("user_analyses").select("id", count="exact").eq("user_email", email).neq("file_name", "SUBSCRIPTION_PAYMENT").execute()
+        response = supabase.table("user_analyses").select("id", count="exact").eq("user_email", email).execute()
         return response.count
     except Exception as e:
         print(f"Usage count error: {e}")
@@ -73,8 +65,6 @@ def log_user_activity(email, file_name):
 
 # --- ৫. ইউজার লগইন / রেজিস্ট্রেশন (Sidebar) ---
 st.sidebar.title("👤 User Account")
-
-current_user = st.session_state.get("user_email")
 
 if not current_user:
     auth_mode = st.sidebar.radio("Choose Action", ["Login", "Sign Up"])
@@ -117,9 +107,11 @@ else:
         st.session_state.user_email = None
         if "session_email" in st.query_params:
             del st.query_params["session_email"]
+        if "payment" in st.query_params:
+            del st.query_params["payment"]
         st.rerun()
 
-# --- ৬. Gemini AI Logic (With Fallback) ---
+# --- ৬. Gemini AI Logic (With Multiple Model Fallback) ---
 def extract_text_from_pdf(pdf_file):
     reader = pypdf.PdfReader(pdf_file)
     text = ""
@@ -151,7 +143,7 @@ Contract Text: {contract_text}"""
     except Exception as e:
         return f"API Client Error: {str(e)}"
 
-# --- ৭. মূল অ্যাপের লজিক (Limit & Subscription) ---
+# --- ৭. মূল অ্যাপের লজিক ---
 if not st.session_state.get("user_email"):
     st.info("👈 সার্ভিসটি ব্যবহার করতে সাইডবার থেকে **Login** অথবা **Sign Up** করুন।")
 else:
@@ -160,6 +152,7 @@ else:
     is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
+    # ফ্রি লিমিট চেক (যদি Admin না হয় এবং Subscribed না হয় এবং ১টি বা তার বেশি ব্যবহার করে থাকে)
     if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
         st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন লিঙ্ক থেকে পেমেন্ট সম্পন্ন করুন।")
@@ -168,17 +161,10 @@ else:
         st.subheader("⭐ Upgrade to Pro")
         st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস।")
         
-        # পেমেন্ট বাটন
-        st.link_button("💳 Subscribe Now ($9/month)", STRIPE_LINK, use_container_width=True)
+        # পেমেন্ট লিংক (সাথে session_email যাতে পেমেন্ট শেষে রিডাইরেক্ট হলে লগইন না হারায়)
+        stripe_redirect_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
+        st.link_button("💳 Subscribe Now ($9/month)", stripe_redirect_url, use_container_width=True)
         
-        # পেমেন্ট পরবর্তী ম্যানুয়াল ভেরিফিকেশন বাটন (যদি রিডাইরেক্ট কাজ না করে)
-        st.markdown("---")
-        st.write("👉 **পেমেন্ট সম্পন্ন করেছেন কিন্তু প্রো স্ট্যাটাস পাননি?**")
-        if st.button("🔄 Check Payment Status"):
-            st.query_params["payment"] = "success"
-            st.query_params["user"] = current_user
-            st.rerun()
-
     else:
         if not is_admin and not is_subscribed:
             st.info(f"📊 আপনি **{usage_count}/1** টি ফ্রি ফাইল ব্যবহার করেছেন।")
