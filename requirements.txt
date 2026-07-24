@@ -1,5 +1,5 @@
 streamlit
 pypdf
 google-genai
-st-paywall
 supabase
+stripe

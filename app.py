@@ -1,5 +1,6 @@
 import streamlit as st
 import pypdf
+import stripe
 from google import genai
 from supabase import create_client, Client
 
@@ -12,6 +13,10 @@ SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "").strip().lower()
 STRIPE_LINK = st.secrets.get("stripe_link", "#")
+STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY", "")
+
+# Stripe API Key সেট করা
+stripe.api_key = STRIPE_SECRET_KEY
 
 @st.cache_resource
 def init_supabase():
@@ -21,42 +26,50 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন ও ইউআরএল প্যারামিটার উদ্ধার ---
+# --- ২. সেশন রিকভারি ---
 query_params = st.query_params
 
-# ইউআরএল-এ ইমেইল থাকলে তা সরাসরি সেশনে সেভ করা (সেশন লস্ট ফিক্স)
-url_email = query_params.get("user_email") or query_params.get("session_email")
-if url_email:
-    st.session_state.user_email = url_email.strip().lower()
+if "user_email" not in st.session_state or not st.session_state.user_email:
+    if "session_email" in query_params:
+        st.session_state.user_email = query_params["session_email"].strip().lower()
 
 current_user = st.session_state.get("user_email")
 
-# --- ৩. ডাটাবেস আপডেট হেল্পার ফাংশন ---
+# --- ৩. ডাটাবেস হেল্পার ফাংশন ---
 def make_user_pro_in_db(email):
     try:
         if not email:
             return False
         email = email.strip().lower()
-        # ডাটাবেসে 해당 ইমেলের রো আপডেট
         supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", email).execute()
         return True
     except Exception as e:
         print(f"Error making pro: {e}")
         return False
 
-# --- ৪. পেমেন্ট শেষে রিডাইরেক্ট লজিক (অটোমেটিক Pro অন করা) ---
+# --- ৪. SERVER-SIDE STRIPE VERIFICATION (১০০% সিকিউর) ---
 if query_params.get("payment") == "success":
-    # সেশন থাকুক বা না থাকুক, URL বা সেশন থেকে ইমেইল বের করা
-    target_email = current_user or query_params.get("user_email") or query_params.get("session_email")
-    
-    if target_email:
-        target_email = target_email.strip().lower()
-        st.session_state.user_email = target_email
-        current_user = target_email
-        
-        # ডাটাবেসে Pro করে দেওয়া
-        if make_user_pro_in_db(target_email):
-            st.toast("🎉 প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!", icon="⭐")
+    session_id = query_params.get("session_id")
+    if session_id and STRIPE_SECRET_KEY:
+        try:
+            # Stripe API ডেকে সেশন ভেরিফাই করা
+            session = stripe.checkout.Session.retrieve(session_id)
+            
+            # পেমেন্ট আসলেই হয়েছে কি না চেক
+            if session.payment_status == "paid":
+                # Stripe থেকে পাওয়া ভেরিফাইড ইমেইল
+                verified_email = session.customer_details.email.strip().lower()
+                
+                # সেশন ও ডাটাবেস আপডেট
+                st.session_state.user_email = verified_email
+                current_user = verified_email
+                
+                if make_user_pro_in_db(verified_email):
+                    st.toast("🎉 প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে ভেরিফাইড ও অ্যাক্টিভেট হয়েছে!", icon="⭐")
+            else:
+                st.error("⚠️ পেমেন্ট অসম্পূর্ণ রয়েছে।")
+        except Exception as e:
+            st.error(f"পেমেন্ট ভেরিফাই করা যায়নি: {str(e)}")
 
 # --- ৫. অন্যান্য হেল্পার ফাংশন ---
 def check_user_subscription_status(email):
@@ -86,7 +99,7 @@ def log_user_activity(email, file_name):
     except Exception as e:
         print(f"Supabase logging failed: {e}")
 
-# --- ৬. সাইডবার লগইন সিস্টেমে ইউআরএল ট্র্যাকিং ---
+# --- ৬. সাইডবার লগইন সিস্টেম ---
 st.sidebar.title("👤 User Account")
 
 if not current_user:
@@ -174,7 +187,7 @@ else:
     is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
-    # লিমিট ওভার চেক
+    # ফ্রি লিমিট ওভার চেক
     if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
         st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন সম্পন্ন করুন।")
@@ -182,19 +195,8 @@ else:
         st.markdown("---")
         st.subheader("⭐ Upgrade to Pro ($9/month)")
         
-        # পেমেন্ট লিংকের সাথে ইউজারের ইমেইল বেঁধে দেওয়া
         stripe_url_with_user = f"{STRIPE_LINK}?prefilled_email={current_user}"
-        
         st.link_button("💳 Pay via Stripe ($9)", stripe_url_with_user, use_container_width=True)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        # যদি রিডাইরেক্টে সেশন লস্ট হয়, কাস্টমার যেন ১ ক্লিকেই এক্টিভেট করতে পারে
-        if st.button("🔄 Check & Activate Subscription Status", use_container_width=True):
-            if make_user_pro_in_db(current_user):
-                st.success("🎉 আপনার অ্যাকাউন্ট প্রিমিয়াম করা হয়েছে!")
-                st.rerun()
-            else:
-                st.error("আপডেট করা যায়নি।")
         
     else:
         if not is_admin and not is_subscribed:
