@@ -21,22 +21,19 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন পুনরুদ্ধার (URL Query Parameter Sync) ---
+# --- ২. সেশন পুনরুদ্ধার (Query Param) ---
 query_params = st.query_params
 
-# যদি URL-এ user অথবা session_email থাকে, সেটা দিয়ে সেশন অটো-লগইন করবে
 if "user_email" not in st.session_state or not st.session_state.user_email:
-    if "user" in query_params:
-        st.session_state.user_email = query_params["user"].strip().lower()
-    elif "session_email" in query_params:
+    if "session_email" in query_params:
         st.session_state.user_email = query_params["session_email"].strip().lower()
 
 current_user = st.session_state.get("user_email")
 
-# --- ৩. পেমেন্ট সাকসেস আপডেট (UPDATE DB) ---
+# --- ৩. পেমেন্ট সাকসেস হ্যান্ডলার (সেশনের কারেন্ট ইউজারকে Pro করা) ---
 if query_params.get("payment") == "success" and current_user:
     try:
-        # ডাটাবেসে is_subscribed = True করা
+        # ডাটাবেসে ইউজারকে Subscribed হিসেবে আপডেট করা
         supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", current_user).execute()
         st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
     except Exception as e:
@@ -161,7 +158,6 @@ else:
         st.subheader("⭐ Upgrade to Pro")
         st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস।")
         
-        # ডায়নামিক স্ট্রাইপ লিঙ্ক: ইউজারের ইমেইল প্রি-ফিল করা
         stripe_dynamic_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
         st.link_button("💳 Subscribe Now ($9/month)", stripe_dynamic_url, use_container_width=True)
         
