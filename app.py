@@ -21,23 +21,31 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন পুনরুদ্ধার (Query Param) ---
+# --- ২. সেশন ও রিডাইরেক্ট রিকভারি ---
 query_params = st.query_params
 
+# পেমেন্ট শেষ করে ইউআরএল এ ইমেইলসহ ব্যাক করলে সেশন অটো রিকভার হবে
 if "user_email" not in st.session_state or not st.session_state.user_email:
     if "session_email" in query_params:
         st.session_state.user_email = query_params["session_email"].strip().lower()
+    elif "email" in query_params:
+        st.session_state.user_email = query_params["email"].strip().lower()
 
 current_user = st.session_state.get("user_email")
 
-# --- ৩. পেমেন্ট সাকসেস হ্যান্ডলার (সেশনের কারেন্ট ইউজারকে Pro করা) ---
-if query_params.get("payment") == "success" and current_user:
-    try:
-        # ডাটাবেসে ইউজারকে Subscribed হিসেবে আপডেট করা
-        supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", current_user).execute()
-        st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
-    except Exception as e:
-        print(f"Subscription Update Error: {e}")
+# --- ৩. পেমেন্ট সাকসেস হ্যান্ডলিং (UPDATE DB) ---
+if query_params.get("payment") == "success":
+    target_email = current_user or query_params.get("email")
+    if target_email:
+        target_email = target_email.strip().lower()
+        try:
+            # ডাটাবেসে is_subscribed = True করা
+            supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", target_email).execute()
+            st.session_state.user_email = target_email
+            current_user = target_email
+            st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
+        except Exception as e:
+            print(f"Subscription Update Error: {e}")
 
 # --- ৪. হেল্পার ফাংশনসমূহ ---
 def check_user_subscription_status(email):
@@ -149,7 +157,6 @@ else:
     is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
-    # ফ্রি লিমিট চেক
     if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
         st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন লিঙ্ক থেকে পেমেন্ট সম্পন্ন করুন।")
@@ -158,6 +165,7 @@ else:
         st.subheader("⭐ Upgrade to Pro")
         st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস।")
         
+        # পেমেন্ট লিংকের সাথে ইউজারের ইমেইল প্রি-ফিল পাঠানো
         stripe_dynamic_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
         st.link_button("💳 Subscribe Now ($9/month)", stripe_dynamic_url, use_container_width=True)
         
