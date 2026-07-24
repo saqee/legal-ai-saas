@@ -38,18 +38,23 @@ current_user = st.session_state.get("user_email")
 
 # --- ৩. ডাটাবেস আপডেট হেল্পার ফাংশন ---
 def make_user_pro_in_db(email):
+    """
+    NOTE: user_analyses শুধু usage-log টেবিল (row তৈরি হয় file analyze করলে)।
+    Subscription status রাখা হয় আলাদা user_subscriptions টেবিলে, upsert দিয়ে —
+    যাতে নতুন user (যে এখনো কিছু analyze করেনি) পেমেন্ট করলেও Pro হতে পারে।
+    """
     try:
         if not email:
             st.session_state["_debug_last_error"] = "make_user_pro_in_db: email empty ছিল"
             return False
         email = email.strip().lower()
-        res = supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", email).execute()
-        # Supabase update() কোনো matching row না পেলেও error দেয় না, খালি res.data = []
+        res = (
+            supabase.table("user_subscriptions")
+            .upsert({"user_email": email, "is_subscribed": True}, on_conflict="user_email")
+            .execute()
+        )
         if not res.data:
-            st.session_state["_debug_last_error"] = (
-                f"make_user_pro_in_db: '{email}' ইমেইলে user_analyses টেবিলে কোনো row ম্যাচ করেনি, "
-                f"তাই update হয়নি (কিন্তু error ও আসেনি)।"
-            )
+            st.session_state["_debug_last_error"] = f"make_user_pro_in_db: upsert হলো কিন্তু res.data খালি: {res}"
             return False
         return True
     except Exception as e:
@@ -132,10 +137,16 @@ def check_user_subscription_status(email):
     if not email:
         return False
     try:
-        res = supabase.table("user_analyses").select("is_subscribed").eq("user_email", email).eq("is_subscribed", True).execute()
+        res = (
+            supabase.table("user_subscriptions")
+            .select("is_subscribed")
+            .eq("user_email", email)
+            .eq("is_subscribed", True)
+            .execute()
+        )
         return len(res.data) > 0
     except Exception as e:
-        print(f"Sub check error: {e}")
+        st.session_state["_debug_last_error"] = f"check_user_subscription_status exception: {e}"
         return False
 
 def get_user_usage_count(email):
