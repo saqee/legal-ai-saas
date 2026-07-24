@@ -21,38 +21,16 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন ও রিডাইরেক্ট রিকভারি ---
+# --- ২. সেশন পুনরুদ্ধার (URL Query Params Sync) ---
 query_params = st.query_params
 
-# URL parameters থেকে সেশন রিকভার করা
 if "user_email" not in st.session_state or not st.session_state.user_email:
-    if "email" in query_params:
-        st.session_state.user_email = query_params["email"].strip().lower()
-    elif "session_email" in query_params:
+    if "session_email" in query_params:
         st.session_state.user_email = query_params["session_email"].strip().lower()
 
 current_user = st.session_state.get("user_email")
 
-# --- ৩. পেমেন্ট অটো-অ্যাক্টিভেশন (Seamless Automatic UX) ---
-if query_params.get("payment") == "success":
-    # Stripe থেকে ব্যাক করা ইমেইল অথবা কারেন্ট সেশন ইমেইল
-    returned_email = query_params.get("email") or current_user
-    
-    if returned_email:
-        returned_email = returned_email.strip().lower()
-        try:
-            # ১. ডাটাবেসে Pro স্ট্যাটাস আপডেট করা
-            supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", returned_email).execute()
-            
-            # ২. সেশন আপডেট ও ইউআরএল ক্লিনআপ
-            st.session_state.user_email = returned_email
-            current_user = returned_email
-            
-            st.toast("🎉 অভিনন্দন! আপনার প্রিমিয়াম সাবস্ক্রিপশন অ্যাক্টিভেট হয়েছে!", icon="⭐")
-        except Exception as e:
-            print(f"Auto-Activation Error: {e}")
-
-# --- ৪. হেল্পার ফাংশনসমূহ ---
+# --- ৩. হেল্পার ফাংশনসমূহ ---
 def check_user_subscription_status(email):
     try:
         res = supabase.table("user_analyses").select("is_subscribed").eq("user_email", email).eq("is_subscribed", True).execute()
@@ -76,7 +54,16 @@ def log_user_activity(email, file_name):
     except Exception as e:
         print(f"Supabase logging failed: {e}")
 
-# --- ৫. ইউজার লগইন / রেজিস্ট্রেশন (Sidebar) ---
+def make_user_pro(email):
+    try:
+        # ডাটাবেসে 해당 ইউজারের সব রো Pro/Subscribed বানিয়ে দেওয়া
+        supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", email).execute()
+        return True
+    except Exception as e:
+        print(f"Error making pro: {e}")
+        return False
+
+# --- ৪. ইউজার লগইন / রেজিস্ট্রেশন (Sidebar) ---
 st.sidebar.title("👤 User Account")
 
 if not current_user:
@@ -121,7 +108,7 @@ else:
         st.query_params.clear()
         st.rerun()
 
-# --- ৬. Gemini AI Logic ---
+# --- ৫. Gemini AI Logic ---
 def extract_text_from_pdf(pdf_file):
     reader = pypdf.PdfReader(pdf_file)
     text = ""
@@ -153,7 +140,7 @@ Contract Text: {contract_text}"""
     except Exception as e:
         return f"API Client Error: {str(e)}"
 
-# --- ৭. মূল অ্যাপের লজিক ---
+# --- ৬. মূল অ্যাপের লজিক ---
 if not st.session_state.get("user_email"):
     st.info("👈 সার্ভিসটি ব্যবহার করতে সাইডবার থেকে **Login** অথবা **Sign Up** করুন।")
 else:
@@ -162,18 +149,32 @@ else:
     is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
+    # যদি পেমেন্ট শেষে রিডাইরেক্ট হয়ে আসে (?payment=success)
+    if query_params.get("payment") == "success" and not is_subscribed:
+        make_user_pro(current_user)
+        st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
+        st.rerun()
+
     # ফ্রি লিমিট চেক
     if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
-        st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন সম্পন্ন করুন।")
+        st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন লিঙ্ক থেকে পেমেন্ট সম্পন্ন করুন।")
         
         st.markdown("---")
         st.subheader("⭐ Upgrade to Pro ($9/month)")
-        st.write("সাবস্ক্রাইব করলেই সাথে সাথে আনলিমিটেড অ্যাক্সেস পেয়ে যাবেন।")
+        st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড চুক্তিপত্র এনালাইসিসের সুবিধা।")
         
-        # পেমেন্ট পেজে ইউজারের ইমেইল অটো-ফিল করে পাঠানো
+        # পেমেন্ট লিংক (যেখানে session_email রিডাইরেক্টের জন্য পাঠানো থাকবে)
         stripe_dynamic_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
-        st.link_button("💳 Subscribe Now ($9/month)", stripe_dynamic_url, use_container_width=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.link_button("💳 Pay via Stripe", stripe_dynamic_url, use_container_width=True)
+        with col2:
+            if st.button("🔄 Already Paid? Click to Verify", use_container_width=True):
+                make_user_pro(current_user)
+                st.success("🎉 আপনার অ্যাকাউন্ট প্রিমিয়াম করা হয়েছে!")
+                st.rerun()
         
     else:
         if not is_admin and not is_subscribed:
