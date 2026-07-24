@@ -21,19 +21,22 @@ supabase: Client = init_supabase()
 
 st.title("📜 AI Contract & Legal Document Analyzer")
 
-# --- ২. সেশন বজায় রাখা (URL Query Parameter Sync) ---
+# --- ২. সেশন পুনরুদ্ধার (URL Query Parameter Sync) ---
 query_params = st.query_params
 
+# যদি URL-এ user অথবা session_email থাকে, সেটা দিয়ে সেশন অটো-লগইন করবে
 if "user_email" not in st.session_state or not st.session_state.user_email:
-    if "session_email" in query_params:
+    if "user" in query_params:
+        st.session_state.user_email = query_params["user"].strip().lower()
+    elif "session_email" in query_params:
         st.session_state.user_email = query_params["session_email"].strip().lower()
 
 current_user = st.session_state.get("user_email")
 
-# --- ৩. পেমেন্ট সাকসেস আপডেট লজিক (UPDATE instead of DOUBLE INSERT) ---
+# --- ৩. পেমেন্ট সাকসেস আপডেট (UPDATE DB) ---
 if query_params.get("payment") == "success" and current_user:
     try:
-        # ডাটাবেসে নতুন রো না বানিয়ে ওই ইমেইলের রো-তে is_subscribed = True করে দেওয়া
+        # ডাটাবেসে is_subscribed = True করা
         supabase.table("user_analyses").update({"is_subscribed": True}).eq("user_email", current_user).execute()
         st.success("🎉 আপনার প্রিমিয়াম সাবস্ক্রিপশন সফলভাবে অ্যাক্টিভেট হয়েছে!")
     except Exception as e:
@@ -105,10 +108,7 @@ else:
         
     if st.sidebar.button("Log Out"):
         st.session_state.user_email = None
-        if "session_email" in st.query_params:
-            del st.query_params["session_email"]
-        if "payment" in st.query_params:
-            del st.query_params["payment"]
+        st.query_params.clear()
         st.rerun()
 
 # --- ৬. Gemini AI Logic (With Multiple Model Fallback) ---
@@ -152,7 +152,7 @@ else:
     is_subscribed = check_user_subscription_status(current_user)
     usage_count = get_user_usage_count(current_user)
     
-    # ফ্রি লিমিট চেক (যদি Admin না হয় এবং Subscribed না হয় এবং ১টি বা তার বেশি ব্যবহার করে থাকে)
+    # ফ্রি লিমিট চেক
     if not is_admin and not is_subscribed and usage_count >= 1:
         st.warning("⚠️ আপনার ১টি ফ্রি ফাইল ব্যবহারের কোটা শেষ হয়ে গেছে!")
         st.error("আনলিমিটেড চুক্তিপত্র বিশ্লেষণ করতে প্রিমিয়াম সাবস্ক্রিপশন লিঙ্ক থেকে পেমেন্ট সম্পন্ন করুন।")
@@ -161,9 +161,9 @@ else:
         st.subheader("⭐ Upgrade to Pro")
         st.write("সাবস্ক্রাইব করলে পাবেন আনলিমিটেড এনালাইসিস।")
         
-        # পেমেন্ট লিংক (সাথে session_email যাতে পেমেন্ট শেষে রিডাইরেক্ট হলে লগইন না হারায়)
-        stripe_redirect_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
-        st.link_button("💳 Subscribe Now ($9/month)", stripe_redirect_url, use_container_width=True)
+        # ডায়নামিক স্ট্রাইপ লিঙ্ক: ইউজারের ইমেইল প্রি-ফিল করা
+        stripe_dynamic_url = f"{STRIPE_LINK}?prefilled_email={current_user}"
+        st.link_button("💳 Subscribe Now ($9/month)", stripe_dynamic_url, use_container_width=True)
         
     else:
         if not is_admin and not is_subscribed:
